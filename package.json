@@ -1,0 +1,70 @@
+{
+  "name": "toco",
+  "displayName": "TOCO - Token & Cost Estimator",
+  "description": "Estimate GPT API token usage and costs directly in your editor",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onCommand:toco.showWorkspaceHotspots"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "toco.showWorkspaceHotspots",
+        "title": "TOCO: Show Workspace Cost Hotspots"
+      }
+    ],
+    "configuration": {
+      "title": "TOCO",
+      "properties": {
+        "toco.defaultModel": {
+          "type": "string",
+          "default": "gpt-4o",
+          "description": "Default model to use for cost estimation (must exist in TOCO pricing table)."
+        },
+        "toco.warning.tokenThreshold": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 0,
+          "description": "Warn when a function's estimated input tokens exceed this threshold (0 disables)."
+        },
+        "toco.hotspots.topN": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Number of most expensive functions to show in workspace hotspots."
+        },
+        "toco.hotspots.maxFiles": {
+          "type": "number",
+          "default": 500,
+          "minimum": 1,
+          "maximum": 5000,
+          "description": "Max number of JS/TS files to scan for workspace hotspots."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0",
+    "@types/node": "^18.x",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "gpt-tokenizer": "^2.1.2"
+  }
+}
+

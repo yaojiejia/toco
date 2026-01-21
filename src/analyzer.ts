@@ -1,19 +1,17 @@
 /**
- * Analyzes documents to detect GPT API calls and calculate token/cost estimates per function.
+ * Analyzes documents to detect LLM API calls and calculate token/cost estimates per function.
  */
 
 import * as vscode from 'vscode';
 import * as ts from 'typescript';
-import { countTokens } from './tokenizer';
 import { calculateCost, ModelName } from './pricing';
-import { parseDocument, findGPTApiCalls, findVariableDefinitions, findImports, GPTApiCallNode } from './astParser';
+import { parseDocument, findVariableDefinitions, findImports, findAllFunctions, findFunctionCallsInFunction } from './astParser';
 import { resolveVariableValue } from './moduleResolver';
+import { getAllProviders } from './providers';
+import { LLMApiCall } from './providers/base';
 
-export interface GPTApiCall {
-  line: number;
-  prompt: string | null;
-  isApproximate: boolean;
-  model: ModelName | string;
+export interface LLMApiCallWithProvider extends LLMApiCall {
+  provider: string;
 }
 
 export interface FunctionEstimate {
@@ -21,51 +19,10 @@ export interface FunctionEstimate {
   line: number;
   totalTokens: number;
   totalCost: number;
-  calls: GPTApiCall[];
+  calls: LLMApiCallWithProvider[];
   isApproximate: boolean;
 }
 
-/**
- * Extracts the prompt expression node from a GPT API call AST node.
- */
-function extractPromptExpression(
-  callNode: ts.Node,
-  sourceFile: ts.SourceFile,
-  callType: 'chat' | 'completion'
-): ts.Expression | null {
-  if (!ts.isCallExpression(callNode) || callNode.arguments.length === 0) {
-    return null;
-  }
-
-  const configArg = callNode.arguments[0];
-  if (!ts.isObjectLiteralExpression(configArg)) {
-    return null;
-  }
-
-  for (const prop of configArg.properties) {
-    if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
-      continue;
-    }
-
-    const propName = prop.name.text;
-    if (propName === 'prompt' && callType === 'completion') {
-      return prop.initializer;
-    } else if (propName === 'messages' && callType === 'chat') {
-      if (ts.isArrayLiteralExpression(prop.initializer) && prop.initializer.elements.length > 0) {
-        const firstMessage = prop.initializer.elements[0];
-        if (ts.isObjectLiteralExpression(firstMessage)) {
-          for (const msgProp of firstMessage.properties) {
-            if (ts.isPropertyAssignment(msgProp) && ts.isIdentifier(msgProp.name) && msgProp.name.text === 'content') {
-              return msgProp.initializer;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return null;
-}
 
 /**
  * Finds the function declaration that contains the given AST node.
@@ -105,20 +62,67 @@ export async function analyzeDocument(
   document: vscode.TextDocument,
   model: ModelName
 ): Promise<FunctionEstimate[]> {
-  const sourceFile = parseDocument(document);
-  const astCalls = findGPTApiCalls(sourceFile);
-  const localVariables = findVariableDefinitions(sourceFile, document.fileName);
-  const imports = findImports(sourceFile);
+  // Check if this is a Python file
+  const isPython = document.languageId === 'python' || document.fileName.endsWith('.py');
+  
+  let sourceFile: ts.SourceFile;
+  let localVariables: Map<string, any>;
+  let imports: Array<{ name: string; from: string; line: number }>;
+  
+  if (isPython) {
+    // For Python, create a minimal SourceFile for compatibility
+    sourceFile = ts.createSourceFile(
+      document.fileName,
+      document.getText(),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.Unknown
+    );
+    // Python variables/imports not yet supported
+    localVariables = new Map();
+    imports = [];
+  } else {
+    sourceFile = parseDocument(document);
+    localVariables = findVariableDefinitions(sourceFile, document.fileName);
+    imports = findImports(sourceFile);
+  }
+  
+  const providers = getAllProviders();
 
-  const calls: GPTApiCall[] = [];
+  // Detect API calls from all providers
+  // For Python files, only use Python providers; for JS/TS, use JS/TS providers
+  const allApiCalls: LLMApiCall[] = [];
+  for (const provider of providers) {
+    // Filter providers based on file type
+    if (isPython) {
+      // Only use Python providers for Python files
+      if (provider.id === 'python-openai' || provider.id === 'python-claude') {
+        const calls = provider.detectApiCalls(sourceFile);
+        allApiCalls.push(...calls);
+      }
+    } else {
+      // Only use JS/TS providers for JS/TS files
+      if (provider.id === 'openai' || provider.id === 'claude') {
+        const calls = provider.detectApiCalls(sourceFile);
+        allApiCalls.push(...calls);
+      }
+    }
+  }
+
+  const calls: LLMApiCallWithProvider[] = [];
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
-  for (const astCall of astCalls) {
+  for (const astCall of allApiCalls) {
+    const provider = providers.find(p => p.id === astCall.provider);
+    if (!provider) {
+      continue;
+    }
+
     let prompt = astCall.prompt;
     let isApproximate = astCall.isApproximate;
 
     if (prompt === null || isApproximate) {
-      const promptExpr = extractPromptExpression(astCall.node, sourceFile, astCall.callType);
+      const promptExpr = provider.extractPromptExpression(astCall.node, sourceFile);
       if (promptExpr && ts.isIdentifier(promptExpr)) {
         const varName = promptExpr.text;
         const resolvedValue = await resolveVariableValue(
@@ -138,7 +142,7 @@ export async function analyzeDocument(
     const callModel = astCall.model || model;
 
     calls.push({
-      line: astCall.line,
+      ...astCall,
       prompt,
       isApproximate,
       model: callModel,
@@ -147,11 +151,21 @@ export async function analyzeDocument(
 
   const functionMap = new Map<string, FunctionEstimate>();
 
-  for (let i = 0; i < calls.length; i++) {
-    const call = calls[i];
-    const astCall = astCalls[i];
+  // Import Python parser functions if needed
+  let findContainingPythonFunction: ((line: number) => { name: string; startLine: number } | null) | null = null;
+  if (isPython) {
+    const pythonParser = await import('./parsers/pythonParser');
+    const pythonFunctions = pythonParser.parsePythonFunctions(document.getText());
+    findContainingPythonFunction = (line: number) => {
+      const func = pythonParser.findContainingFunction(line, pythonFunctions);
+      return func ? { name: func.name, startLine: func.startLine } : null;
+    };
+  }
 
-    const func = findContainingFunctionAST(astCall.node, sourceFile);
+  for (const call of calls) {
+    const func = isPython && findContainingPythonFunction
+      ? findContainingPythonFunction(call.line)
+      : findContainingFunctionAST(call.node, sourceFile);
 
     if (!func) {
       const key = 'top-level';
@@ -195,17 +209,24 @@ export async function analyzeDocument(
         isApproximate = true;
       }
 
+      const provider = providers.find(p => p.id === call.provider);
+      if (!provider) {
+        continue;
+      }
+
       if (call.prompt !== null && call.prompt !== undefined) {
         if (call.prompt.length > 0) {
-          const callTokens = countTokens(call.prompt, call.model);
+          const callTokens = provider.countTokens(call.prompt, call.model || model);
           totalTokens += callTokens;
-          totalCost += calculateCost(callTokens, call.model);
+          totalCost += calculateCost(callTokens, call.model || model);
         }
       } else {
         isApproximate = true;
-        const defaultTokens = 100;
+        // Use message count to scale default tokens if available
+        const messageCount = call.messageCount || 1;
+        const defaultTokens = 100 * messageCount;
         totalTokens += defaultTokens;
-        totalCost += calculateCost(defaultTokens, call.model);
+        totalCost += calculateCost(defaultTokens, call.model || model);
       }
     }
 
@@ -213,6 +234,131 @@ export async function analyzeDocument(
     estimate.isApproximate = isApproximate;
     estimate.totalCost = totalCost;
     estimates.push(estimate);
+  }
+
+  // Build call graph and aggregate statistics from called functions
+  // For Python, we need to parse functions differently
+  let allFunctions: Array<{ name: string; line: number; node: ts.Node }>;
+  if (isPython) {
+    const pythonParser = await import('./parsers/pythonParser');
+    const pythonFunctions = pythonParser.parsePythonFunctions(document.getText());
+    allFunctions = pythonFunctions.map(f => ({
+      name: f.name,
+      line: f.startLine,
+      node: sourceFile, // Placeholder
+    }));
+  } else {
+    allFunctions = findAllFunctions(sourceFile);
+  }
+  const functionCallMap = new Map<string, Array<{ name: string; count: number }>>(); // functionName -> array of called functions with call count
+  
+  // Build the call graph (tracking call counts)
+  if (isPython) {
+    // Python function call tracking
+    const pythonParser = await import('./parsers/pythonParser');
+    const pythonFunctions = pythonParser.parsePythonFunctions(document.getText());
+    
+    for (const func of allFunctions) {
+      const pythonFunc = pythonFunctions.find(f => f.name === func.name);
+      if (pythonFunc) {
+        const calledFunctions = pythonParser.findFunctionCallsInPythonFunction(pythonFunc, document.getText());
+        if (calledFunctions.length > 0) {
+          functionCallMap.set(func.name, calledFunctions);
+        }
+      }
+    }
+  } else {
+    // JS/TS function call tracking
+    for (const func of allFunctions) {
+      const calledFunctions = findFunctionCallsInFunction(func.node, sourceFile);
+      const calledMap = new Map<string, number>();
+      
+      for (const call of calledFunctions) {
+        // Only track simple function calls (not method calls like obj.method)
+        if (!call.name.includes('.')) {
+          calledMap.set(call.name, (calledMap.get(call.name) || 0) + 1);
+        }
+      }
+      
+      if (calledMap.size > 0) {
+        const calledArray = Array.from(calledMap.entries()).map(([name, count]) => ({ name, count }));
+        functionCallMap.set(func.name, calledArray);
+      }
+    }
+  }
+
+  // Create a map for quick lookup of function estimates
+  // Use function name + line as key to handle duplicate function names
+  const estimateMap = new Map<string, FunctionEstimate>();
+  for (const estimate of estimates) {
+    const key = `${estimate.functionName}-${estimate.line}`;
+    estimateMap.set(key, estimate);
+    // Also store by name only for lookup
+    if (!estimateMap.has(estimate.functionName)) {
+      estimateMap.set(estimate.functionName, estimate);
+    }
+  }
+
+  // Create estimates for functions that call other functions but have no direct API calls
+  for (const func of allFunctions) {
+    if (!estimateMap.has(func.name) && functionCallMap.has(func.name)) {
+      const estimate: FunctionEstimate = {
+        functionName: func.name,
+        line: func.line,
+        totalTokens: 0,
+        totalCost: 0,
+        calls: [],
+        isApproximate: false,
+      };
+      estimateMap.set(func.name, estimate);
+      estimates.push(estimate);
+    }
+  }
+
+  // Aggregate statistics from called functions
+  const visited = new Set<string>();
+  function getFunctionStats(functionName: string): { tokens: number; cost: number; isApproximate: boolean } {
+    if (visited.has(functionName)) {
+      return { tokens: 0, cost: 0, isApproximate: false }; // Avoid infinite recursion
+    }
+    
+    visited.add(functionName);
+    
+    // Start with direct API call statistics for this function
+    const estimate = estimateMap.get(functionName);
+    let tokens = estimate ? estimate.totalTokens : 0;
+    let cost = estimate ? estimate.totalCost : 0;
+    let isApproximate = estimate ? estimate.isApproximate : false;
+    
+    // Add statistics from called functions (multiplied by call count)
+    const calledFunctions = functionCallMap.get(functionName);
+    if (calledFunctions) {
+      for (const { name: calledName, count } of calledFunctions) {
+        const calledStats = getFunctionStats(calledName);
+        tokens += calledStats.tokens * count;
+        cost += calledStats.cost * count;
+        if (calledStats.isApproximate) {
+          isApproximate = true;
+        }
+      }
+    }
+    
+    visited.delete(functionName);
+    return { tokens, cost, isApproximate };
+  }
+
+  // Update estimates with aggregated statistics from called functions
+  for (const func of allFunctions) {
+    const estimate = estimateMap.get(func.name);
+    if (estimate && functionCallMap.has(func.name)) {
+      visited.clear();
+      const aggregated = getFunctionStats(func.name);
+      
+      // Update with aggregated statistics (includes direct calls + called functions)
+      estimate.totalTokens = aggregated.tokens;
+      estimate.totalCost = aggregated.cost;
+      estimate.isApproximate = aggregated.isApproximate;
+    }
   }
 
   return estimates;

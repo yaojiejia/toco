@@ -16,7 +16,7 @@ class TocoCodeLensProvider implements vscode.CodeLensProvider {
   }
 
   /**
-   * Provides CodeLens annotations for functions containing GPT API calls.
+   * Provides CodeLens annotations for functions containing LLM API calls.
    */
   public async provideCodeLenses(
     document: vscode.TextDocument,
@@ -50,7 +50,9 @@ class TocoCodeLensProvider implements vscode.CodeLensProvider {
         const range = new vscode.Range(codeLensLine, 0, codeLensLine, 0);
 
         // Get the model from the first call (or default model)
-        const firstCallModel = estimate.calls.length > 0 ? estimate.calls[0].model : model;
+        const firstCallModel: string = (estimate.calls.length > 0 && estimate.calls[0].model) 
+          ? estimate.calls[0].model 
+          : model;
         
         // Check if model is supported
         const isModelSupported = this.isModelSupported(firstCallModel);
@@ -216,7 +218,7 @@ class TocoCodeLensProvider implements vscode.CodeLensProvider {
   private createFileSummaryTooltip(estimates: FunctionEstimate[], model: ModelName): string {
     const validEstimates = estimates.filter(e => e.functionName !== 'top-level');
     if (validEstimates.length === 0) {
-      return 'No GPT API calls detected in this file';
+      return 'No LLM API calls detected in this file';
     }
 
     let totalTokens = 0;
@@ -228,7 +230,7 @@ class TocoCodeLensProvider implements vscode.CodeLensProvider {
 
     const lines: string[] = [];
     lines.push('File Summary:');
-    lines.push(`  Total functions with GPT calls: ${validEstimates.length}`);
+    lines.push(`  Total functions with LLM calls: ${validEstimates.length}`);
     lines.push(`  Total tokens per run: ${totalTokens.toLocaleString()}`);
     lines.push(`  Total cost per run: ${formatCost(totalCost)}`);
     lines.push(`  Total cost for 1000 runs: ${this.formatCostFor1000(totalCost * 1000)}`);
@@ -269,6 +271,7 @@ export function activate(context: vscode.ExtensionContext) {
     [
       { scheme: 'file', language: 'javascript' },
       { scheme: 'file', language: 'typescript' },
+      { scheme: 'file', language: 'python' },
     ],
     codeLensProvider
   );
@@ -298,7 +301,7 @@ export function activate(context: vscode.ExtensionContext) {
       const topN = config.get<number>('hotspots.topN', 10) ?? 10;
       const maxFiles = config.get<number>('hotspots.maxFiles', 500) ?? 500;
 
-      const files = await vscode.workspace.findFiles('**/*.{js,ts,jsx,tsx}', '**/{node_modules,out}/**', maxFiles);
+      const files = await vscode.workspace.findFiles('**/*.{js,ts,jsx,tsx,py}', '**/{node_modules,out}/**', maxFiles);
       if (files.length === 0) {
         vscode.window.showInformationMessage('TOCO: No JS/TS files found in workspace.');
         return;

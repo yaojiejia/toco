@@ -88,3 +88,29 @@ async function legacyCompletion() {
   return response;
 }
 
+// Example 6: Function that calls other completion functions
+async function combineCalls() {
+  await legacyCompletion();
+  await legacyCompletion();
+}
+
+// Example 7: Claude API call
+import Anthropic from '@anthropic-ai/sdk';
+
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
+
+async function claudeCompletion() {
+  const response = await anthropic.messages.create({
+    model: 'claude-3-5-sonnet',
+    messages: [
+      {
+        role: 'user',
+        content: 'What is the capital of France?',
+      },
+    ],
+  });
+  return response;
+}
+

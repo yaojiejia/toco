@@ -1,18 +1,10 @@
 /**
- * AST parser using TypeScript Compiler API to find GPT API calls and extract code structure.
+ * AST parser using TypeScript Compiler API to extract code structure (variables, imports, functions).
+ * LLM API detection is now handled by provider-specific implementations.
  */
 
 import * as ts from 'typescript';
 import * as vscode from 'vscode';
-
-export interface GPTApiCallNode {
-  line: number;
-  prompt: string | null;
-  isApproximate: boolean;
-  model: string | null;
-  callType: 'chat' | 'completion';
-  node: ts.Node;
-}
 
 export interface VariableDefinition {
   name: string;
@@ -50,180 +42,6 @@ export function parseDocument(document: vscode.TextDocument): ts.SourceFile {
   );
 }
 
-/**
- * Traverses the AST to find all GPT API calls (openai.chat.completions.create or openai.completions.create).
- */
-export function findGPTApiCalls(sourceFile: ts.SourceFile): GPTApiCallNode[] {
-  const calls: GPTApiCallNode[] = [];
-
-  function visit(node: ts.Node) {
-    if (ts.isCallExpression(node)) {
-      const expression = node.expression;
-
-      if (ts.isPropertyAccessExpression(expression)) {
-        const propName = expression.name.text;
-
-        if (propName === 'create') {
-          const parent = expression.expression;
-
-          if (ts.isPropertyAccessExpression(parent)) {
-            const parentProp = parent.name.text;
-
-            if (parentProp === 'completions') {
-              const grandParent = parent.expression;
-
-              if (ts.isIdentifier(grandParent) && grandParent.text === 'openai') {
-                const callInfo = extractCallInfo(node, sourceFile, 'completion');
-                if (callInfo) {
-                  calls.push(callInfo);
-                }
-              } else if (ts.isPropertyAccessExpression(grandParent)) {
-                const grandParentProp = grandParent.name.text;
-                if (grandParentProp === 'chat') {
-                  const greatGrandParent = grandParent.expression;
-                  if (ts.isIdentifier(greatGrandParent) && greatGrandParent.text === 'openai') {
-                    const callInfo = extractCallInfo(node, sourceFile, 'chat');
-                    if (callInfo) {
-                      calls.push(callInfo);
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    ts.forEachChild(node, visit);
-  }
-
-  visit(sourceFile);
-  return calls;
-}
-
-/**
- * Extracts prompt, model, and metadata from a GPT API call AST node.
- */
-function extractCallInfo(
-  node: ts.CallExpression,
-  sourceFile: ts.SourceFile,
-  callType: 'chat' | 'completion'
-): GPTApiCallNode | null {
-  const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-
-  if (node.arguments.length === 0) {
-    return null;
-  }
-
-  const configArg = node.arguments[0];
-  if (!ts.isObjectLiteralExpression(configArg)) {
-    return null;
-  }
-
-  let prompt: string | null = null;
-  let model: string | null = null;
-  let isApproximate = false;
-
-  for (const prop of configArg.properties) {
-    if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
-      continue;
-    }
-
-    const propName = prop.name.text;
-
-    if (propName === 'model') {
-      model = extractStringValue(prop.initializer);
-    } else if (propName === 'prompt' && callType === 'completion') {
-      const promptValue = extractPromptValue(prop.initializer, sourceFile);
-      prompt = promptValue.value;
-      isApproximate = promptValue.isApproximate;
-    } else if (propName === 'messages' && callType === 'chat') {
-      const messagesValue = extractMessagesValue(prop.initializer, sourceFile);
-      prompt = messagesValue.prompt;
-      isApproximate = messagesValue.isApproximate;
-    }
-  }
-
-  return {
-    line,
-    prompt,
-    isApproximate,
-    model,
-    callType,
-    node,
-  };
-}
-
-/**
- * Extracts string value from a string literal or template literal expression.
- */
-function extractStringValue(expr: ts.Expression): string | null {
-  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) {
-    return expr.text;
-  }
-  return null;
-}
-
-/**
- * Extracts prompt value from an expression, handling strings, template strings, and variables.
- */
-function extractPromptValue(
-  expr: ts.Expression,
-  sourceFile: ts.SourceFile
-): { value: string | null; isApproximate: boolean } {
-  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) {
-    return { value: expr.text, isApproximate: false };
-  }
-
-  if (ts.isTemplateExpression(expr)) {
-    const hasExpressions = expr.templateSpans.length > 0;
-    if (!hasExpressions) {
-      return { value: expr.head.text, isApproximate: false };
-    }
-    return { value: null, isApproximate: true };
-  }
-
-  if (ts.isIdentifier(expr)) {
-    return { value: null, isApproximate: true };
-  }
-
-  return { value: null, isApproximate: true };
-}
-
-/**
- * Extracts prompt from the first message's content property in a messages array.
- */
-function extractMessagesValue(
-  expr: ts.Expression,
-  sourceFile: ts.SourceFile
-): { prompt: string | null; isApproximate: boolean } {
-  if (!ts.isArrayLiteralExpression(expr)) {
-    return { prompt: null, isApproximate: true };
-  }
-
-  if (expr.elements.length === 0) {
-    return { prompt: null, isApproximate: true };
-  }
-
-  const firstMessage = expr.elements[0];
-  if (!ts.isObjectLiteralExpression(firstMessage)) {
-    return { prompt: null, isApproximate: true };
-  }
-
-  for (const prop of firstMessage.properties) {
-    if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
-      continue;
-    }
-
-    if (prop.name.text === 'content') {
-      const result = extractPromptValue(prop.initializer, sourceFile);
-      return { prompt: result.value, isApproximate: result.isApproximate };
-    }
-  }
-
-  return { prompt: null, isApproximate: true };
-}
 
 /**
  * Finds all variable declarations (const/let/var) in the AST and extracts their string values.
@@ -241,7 +59,9 @@ export function findVariableDefinitions(
 
       let value: string | null = null;
       if (node.initializer) {
-        value = extractStringValue(node.initializer);
+        if (ts.isStringLiteral(node.initializer) || ts.isNoSubstitutionTemplateLiteral(node.initializer)) {
+          value = node.initializer.text;
+        }
       }
 
       const parent = node.parent;
@@ -263,6 +83,71 @@ export function findVariableDefinitions(
 
   visit(sourceFile);
   return variables;
+}
+
+/**
+ * Finds all function calls within a specific function's body.
+ */
+export function findFunctionCallsInFunction(
+  functionNode: ts.Node,
+  sourceFile: ts.SourceFile
+): Array<{ name: string; line: number }> {
+  const calls: Array<{ name: string; line: number }> = [];
+
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node)) {
+      const expression = node.expression;
+      
+      if (ts.isIdentifier(expression)) {
+        const funcName = expression.text;
+        const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+        calls.push({ name: funcName, line });
+      } else if (ts.isPropertyAccessExpression(expression)) {
+        const propName = expression.name.text;
+        const obj = expression.expression;
+        
+        if (ts.isIdentifier(obj)) {
+          const funcName = `${obj.text}.${propName}`;
+          const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+          calls.push({ name: funcName, line });
+        }
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  visit(functionNode);
+  return calls;
+}
+
+/**
+ * Finds all function declarations and expressions in the AST.
+ */
+export function findAllFunctions(sourceFile: ts.SourceFile): Array<{
+  name: string;
+  line: number;
+  node: ts.Node;
+}> {
+  const functions: Array<{ name: string; line: number; node: ts.Node }> = [];
+
+  function visit(node: ts.Node) {
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+      functions.push({ name: node.name.text, line, node });
+    } else if (ts.isFunctionExpression(node) || ts.isArrowFunction(node)) {
+      const parent = node.parent;
+      if (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
+        const line = sourceFile.getLineAndCharacterOfPosition(parent.getStart()).line + 1;
+        functions.push({ name: parent.name.text, line, node });
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return functions;
 }
 
 /**

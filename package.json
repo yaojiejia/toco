@@ -1,7 +1,7 @@
 {
   "name": "toco",
   "displayName": "TOCO - Token & Cost Estimator",
-  "description": "Estimate GPT API token usage and costs directly in your editor",
+  "description": "Estimate LLM API token usage and costs directly in your editor",
   "version": "0.1.0",
   "engines": {
     "vscode": "^1.74.0"
@@ -12,6 +12,7 @@
   "activationEvents": [
     "onLanguage:javascript",
     "onLanguage:typescript",
+    "onLanguage:python",
     "onCommand:toco.showWorkspaceHotspots"
   ],
   "main": "./out/extension.js",
@@ -56,7 +57,8 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node out/test/index.js"
   },
   "devDependencies": {
     "@types/vscode": "^1.74.0",

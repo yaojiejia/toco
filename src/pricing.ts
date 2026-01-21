@@ -1,7 +1,7 @@
 /**
- * Pricing table for GPT models (input tokens only)
+ * Pricing table for LLM models (input tokens only)
  * Prices are per 1M tokens, as of 2024
- * Version: 1.0
+ * Version: 2.0 (supports multiple providers)
  */
 
 /**
@@ -139,6 +139,54 @@ export const PRICING_TABLE: Record<string, ModelPricing> = {
   'o4-mini-deep-research': {
     name: 'o4-mini-deep-research',
     pricePerMillionTokens: 2.0, // $2.00 per 1M input tokens
+  },
+  // Anthropic Claude series
+  // Opus series
+  'claude-opus-4.5': {
+    name: 'claude-opus-4.5',
+    pricePerMillionTokens: 5.0, // $5.00 per 1M input tokens
+  },
+  'claude-opus-4.1': {
+    name: 'claude-opus-4.1',
+    pricePerMillionTokens: 15.0, // $15.00 per 1M input tokens
+  },
+  'claude-opus-4': {
+    name: 'claude-opus-4',
+    pricePerMillionTokens: 15.0, // $15.00 per 1M input tokens
+  },
+  'claude-3-opus': {
+    name: 'claude-3-opus',
+    pricePerMillionTokens: 15.0, // $15.00 per 1M input tokens (deprecated)
+  },
+  // Sonnet series
+  'claude-sonnet-4.5': {
+    name: 'claude-sonnet-4.5',
+    pricePerMillionTokens: 3.0, // $3.00 per 1M input tokens
+  },
+  'claude-sonnet-4': {
+    name: 'claude-sonnet-4',
+    pricePerMillionTokens: 3.0, // $3.00 per 1M input tokens
+  },
+  'claude-3-5-sonnet': {
+    name: 'claude-3-5-sonnet',
+    pricePerMillionTokens: 3.0, // $3.00 per 1M input tokens
+  },
+  'claude-3-sonnet': {
+    name: 'claude-3-sonnet',
+    pricePerMillionTokens: 3.0, // $3.00 per 1M input tokens (deprecated, Sonnet 3.7)
+  },
+  // Haiku series
+  'claude-haiku-4.5': {
+    name: 'claude-haiku-4.5',
+    pricePerMillionTokens: 1.0, // $1.00 per 1M input tokens
+  },
+  'claude-3-5-haiku': {
+    name: 'claude-3-5-haiku',
+    pricePerMillionTokens: 0.8, // $0.80 per 1M input tokens
+  },
+  'claude-3-haiku': {
+    name: 'claude-3-haiku',
+    pricePerMillionTokens: 0.25, // $0.25 per 1M input tokens
   },
 };
 
